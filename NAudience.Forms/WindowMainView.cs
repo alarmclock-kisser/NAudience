@@ -48,10 +48,10 @@ namespace NAudience.Forms
             this.FrameRate = WindowsScreenHelper.GetScreenRefreshRate();
 
             // Lock width to a fixed client width (height resizable only)
-            this.ClientSize = new Size(FixedClientWidth, this.ClientSize.Height);
+            this.ClientSize = new Size(this.FixedClientWidth, this.ClientSize.Height);
             int border = this.Width - this.ClientSize.Width; // non-client width (borders)
-            this.MinimumSize = new Size(FixedClientWidth + border, 240);
-            this.MaximumSize = new Size(FixedClientWidth + border, int.MaxValue);
+            this.MinimumSize = new Size(this.FixedClientWidth + border, 240);
+            this.MaximumSize = new Size(this.FixedClientWidth + border, int.MaxValue);
             this.Resize += (_, __) => this.HandleResizeLayout();
 
             // UI Event-Hander f�r Einstellungen
@@ -133,5 +133,14 @@ namespace NAudience.Forms
 
         }
 
-	}
+        private async void button_autoCut_Click(object sender, EventArgs e)
+        {
+            // Fallback: erster Track oder selektierter (z.B. letzter geklickter)
+            var first = this.trackUis.Values.FirstOrDefault();
+            if (first != null)
+            {
+                await this.AutoCutToPaletteAsync(first);
+            }
+        }
+    }
 }

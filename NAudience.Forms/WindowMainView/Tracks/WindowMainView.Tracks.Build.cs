@@ -107,6 +107,10 @@ namespace NAudience.Forms
             var miCopy = new ToolStripMenuItem("Copy");
             var miExport = new ToolStripMenuItem("Export");
             var miDelete = new ToolStripMenuItem("Delete");
+            var miAutoCut = new ToolStripMenuItem("Auto-Cut");
+            var miAutoCutPalette = new ToolStripMenuItem("To Sample Palette");
+            miAutoCutPalette.Click += async (_, __) => await this.AutoCutToPaletteAsync(tui);
+            miAutoCut.DropDownItems.Add(miAutoCutPalette);
 
             miRename.Click += (_, __) => this.RenameTrack(tui);
             miCopy.Click += async (_, __) => await this.CopyTrackAsync(tui);
@@ -130,8 +134,40 @@ namespace NAudience.Forms
             miExport.DropDownItems.Add(wav);
             miExport.DropDownItems.Add(mp3);
 
-            cms.Items.AddRange(new ToolStripItem[] { miRename, miCopy, miExport, miDelete });
+            cms.Items.AddRange(new ToolStripItem[] { miRename, miCopy, miExport, miAutoCut, miDelete });
             return cms;
+        }
+
+        private async Task AutoCutToPaletteAsync(TrackUi tui)
+        {
+            try
+            {
+                var audio = tui.Audio;
+                if (audio == null || audio.Data == null || audio.Data.Length == 0)
+                {
+                    return;
+                }
+                // Use collection settings
+                var cuts = await audio.AutoCutAsync(
+                    threshold: this.AudioC.Threshold,
+                    minDurationMs: this.AudioC.MinDurationMs,
+                    maxDurationMs: this.AudioC.MaxDurationMs,
+                    silenceWindowMs: this.AudioC.SilenceWindowMs,
+                    mergeSimilarThreshold: null,
+                    onePaletteLoop: true);
+                if (cuts != null && cuts.Count > 0)
+                {
+                    foreach (var newAudio in cuts)
+                    {
+                        this.AudioC.Audios.Add(newAudio);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                try { LogCollection.Log(ex); } catch { }
+                MessageBox.Show("Auto-Cut failed: " + ex.Message, "Auto-Cut", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private sealed class TrackUi

@@ -173,7 +173,7 @@ namespace NAudience.Core
             if (endSampleIndex <= startSampleIndex)
             {
                 this.loopEnabled = false;
-                RebuildLoopPipeline(adjustPosition: true);
+                this.RebuildLoopPipeline(adjustPosition: true);
                 return;
             }
             this.loopEnabled = true;
@@ -188,7 +188,7 @@ namespace NAudience.Core
             }
             catch { this.loopActivationSamples = 0; }
 
-            RebuildLoopPipeline(adjustPosition: true);
+            this.RebuildLoopPipeline(adjustPosition: true);
         }
 
         public void ClearLoop(long? resumeSampleIndex = null)
@@ -226,7 +226,7 @@ namespace NAudience.Core
                 }
                 else
                 {
-                    RebuildLoopPipeline(adjustPosition: false);
+                    this.RebuildLoopPipeline(adjustPosition: false);
                 }
                 return;
             }

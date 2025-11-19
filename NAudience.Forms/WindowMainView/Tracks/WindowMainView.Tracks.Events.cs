@@ -200,7 +200,7 @@ namespace NAudience.Forms
                 // update loop immediately
                 ApplyLoopFractionToAudio(tui);
                 // align view & caret with current position after leaving loop
-                AlignViewToCurrentPosition(tui);
+                this.AlignViewToCurrentPosition(tui);
                 _ = this.RefreshWaveformAsync(tui);
                 return;
             }

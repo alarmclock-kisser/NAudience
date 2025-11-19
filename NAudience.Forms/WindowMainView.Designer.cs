@@ -53,6 +53,7 @@
             this.button_colorBack = new Button();
             this.button_colorWave = new Button();
             this.button_import = new Button();
+            this.button_autoCut = new Button();
             this.panel_waveforms.SuspendLayout();
             this.panel_track.SuspendLayout();
             ((System.ComponentModel.ISupportInitialize) this.pictureBox_waveform).BeginInit();
@@ -185,6 +186,7 @@
             // panel_controls
             // 
             this.panel_controls.BackColor = SystemColors.Control;
+            this.panel_controls.Controls.Add(this.button_autoCut);
             this.panel_controls.Controls.Add(this.button_browse);
             this.panel_controls.Controls.Add(this.checkBox_fitHeight);
             this.panel_controls.Controls.Add(this.button_strobe);
@@ -336,6 +338,16 @@
             this.button_import.UseVisualStyleBackColor = false;
             this.button_import.Click += this.button_import_Click;
             // 
+            // button_autoCut
+            // 
+            this.button_autoCut.Location = new Point(381, 3);
+            this.button_autoCut.Name = "button_autoCut";
+            this.button_autoCut.Size = new Size(75, 23);
+            this.button_autoCut.TabIndex = 49;
+            this.button_autoCut.Text = "Auto Cut";
+            this.button_autoCut.UseVisualStyleBackColor = true;
+            this.button_autoCut.Click += this.button_autoCut_Click;
+            // 
             // WindowMainView
             // 
             this.AutoScaleDimensions = new SizeF(7F, 15F);
@@ -383,5 +395,6 @@
         private Label label_volume;
         private CheckBox checkBox_fitHeight;
         private Button button_browse;
+        private Button button_autoCut;
     }
 }
