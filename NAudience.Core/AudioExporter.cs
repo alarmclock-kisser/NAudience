@@ -82,23 +82,23 @@ namespace NAudience.Core
             sw.Stop();
             audio["Mp3Export"] = sw.Elapsed.TotalMilliseconds;
 
-			if (writeBpmTag && audio.Bpm > 10)
-			{
-				try
-				{
-					var tagFile = TagLib.File.Create(outFile);
-					tagFile.Tag.BeatsPerMinute = (uint) Math.Round(audio.Bpm);
-					tagFile.Save();
-				}
-				catch (Exception ex)
-				{
-					Debug.WriteLine($"Failed to write BPM tag: {ex.Message}");
-				}
-			}
+            if (writeBpmTag && audio.Bpm > 10)
+            {
+                try
+                {
+                    var tagFile = TagLib.File.Create(outFile);
+                    tagFile.Tag.BeatsPerMinute = (uint) Math.Round(audio.Bpm);
+                    tagFile.Save();
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"Failed to write BPM tag: {ex.Message}");
+                }
+            }
 
             LogCollection.Log($"Exported {audio.Name} to {outFile}");
 
-			return outFile;
+            return outFile;
         }
 
         public async Task<string?> ExportWavAsync(AudioObj audio, int bitDepth = 24, string? outDir = null, bool writeBpmTag = true)
@@ -188,11 +188,11 @@ namespace NAudience.Core
                     {
                         Debug.WriteLine($"Failed to write BPM tag: {ex.Message}");
                     }
-				}
+                }
 
-				LogCollection.Log($"Exported {audio.Name} to {finalPath}");
+                LogCollection.Log($"Exported {audio.Name} to {finalPath}");
 
-				return finalPath;
+                return finalPath;
             }
             catch (Exception ex)
             {

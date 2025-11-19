@@ -39,10 +39,10 @@ namespace NAudience.Core
     }
 
     // Einfacher Provider, der aus einem Float-Array (interleaved) liest
-    internal sealed class ArraySampleProvider : ISampleProvider
+    internal class ArraySampleProvider : ISampleProvider
     {
-        private readonly float[] data;
-        private long position; // in Samples (floats)
+        protected readonly float[] data;
+        protected long position; // in Samples (floats)
         public WaveFormat WaveFormat { get; }
 
         public ArraySampleProvider(float[] data, int sampleRate, int channels, long startSampleIndex = 0)
@@ -62,7 +62,7 @@ namespace NAudience.Core
             this.position = Math.Clamp(startSampleIndex, 0, data.LongLength);
         }
 
-        public int Read(float[] buffer, int offset, int count)
+        public virtual int Read(float[] buffer, int offset, int count)
         {
             int samplesAvailable = (int) Math.Min(count, this.data.LongLength - this.position);
             if (samplesAvailable <= 0)
@@ -76,18 +76,77 @@ namespace NAudience.Core
         }
     }
 
+    // Provider, der einen Bereich [loopStart, loopEnd) endlos looped
+    internal sealed class LoopingArraySampleProvider : ArraySampleProvider
+    {
+        private readonly long loopStart; // inclusive
+        private readonly long loopEnd;   // exclusive
+
+        public LoopingArraySampleProvider(float[] data, int sampleRate, int channels, long loopStartSampleIndex, long loopEndSampleIndex, long startSampleIndex)
+            : base(data, sampleRate, channels, 0)
+        {
+            long len = data.LongLength;
+            this.loopStart = Math.Clamp(loopStartSampleIndex, 0, len);
+            this.loopEnd = Math.Clamp(loopEndSampleIndex, this.loopStart + 1, len);
+            long start = Math.Clamp(startSampleIndex, this.loopStart, this.loopEnd - 1);
+            this.position = start;
+        }
+
+        public override int Read(float[] buffer, int offset, int count)
+        {
+            if (count <= 0)
+            {
+                return 0;
+            }
+
+            int written = 0;
+            long len = this.data.LongLength;
+            if (this.loopStart < 0 || this.loopEnd <= this.loopStart || this.loopStart >= len)
+            {
+                return base.Read(buffer, offset, count);
+            }
+
+            while (written < count)
+            {
+                // Wenn Position außerhalb des Loop-Bereichs: auf Loop-Start springen
+                if (this.position < this.loopStart || this.position >= this.loopEnd)
+                {
+                    this.position = this.loopStart;
+                }
+                long remainingInLoop = this.loopEnd - this.position;
+                if (remainingInLoop <= 0)
+                {
+                    this.position = this.loopStart;
+                    continue;
+                }
+                int toCopy = (int) Math.Min(count - written, remainingInLoop);
+                Array.Copy(this.data, (int) this.position, buffer, offset + written, toCopy);
+                this.position += toCopy;
+                written += toCopy;
+            }
+            return written;
+        }
+    }
+
     public sealed class AudioPlaybackService : IDisposable
     {
         private readonly WaveOutEvent player; // von außen injiziert oder intern erzeugt
         private readonly bool ownsPlayer;
         private AudioFileReader? reader; // float32 Quelle (Datei) optional
         private SwitchingSampleProvider? switching; // konstanter Output (Geräteformat)
+        private VolumeSampleProvider? volumeControl; // per-instance volume control
         private SampleToWaveProvider? waveProvider; // für WaveOutEvent.Init
         private ISampleProvider? pipeline; // aktuelle (resampled) Pipeline
         private readonly object graphGate = new();
         private float[]? rawData; // store original data for seeking while paused
         private int rawSampleRate;
         private int rawChannels;
+
+        // Loop config (array-based playback)
+        private bool loopEnabled;
+        private long loopStartSamples;
+        private long loopEndSamples;
+        private long loopActivationSamples; // absolute sample counter snapshot when loop was activated
 
         public float PlaybackRate { get; private set; } = 1.0f;
         public int DeviceSampleRate { get; private set; } = 44100;
@@ -109,6 +168,94 @@ namespace NAudience.Core
             this.player.PlaybackStopped += (s, e) => this.PlaybackStopped?.Invoke(this, e);
         }
 
+        public void SetLoop(long startSampleIndex, long endSampleIndex)
+        {
+            if (endSampleIndex <= startSampleIndex)
+            {
+                this.loopEnabled = false;
+                RebuildLoopPipeline(adjustPosition: true);
+                return;
+            }
+            this.loopEnabled = true;
+            this.loopStartSamples = Math.Max(0, startSampleIndex);
+            this.loopEndSamples = Math.Max(this.loopStartSamples + 1, endSampleIndex);
+
+            // Snapshot absolute samples at activation for later modulo mapping
+            try
+            {
+                long bytes = this.player.GetPosition();
+                this.loopActivationSamples = bytes / sizeof(float);
+            }
+            catch { this.loopActivationSamples = 0; }
+
+            RebuildLoopPipeline(adjustPosition: true);
+        }
+
+        public void ClearLoop(long? resumeSampleIndex = null)
+        {
+            long startSampleIndex;
+            if (resumeSampleIndex.HasValue)
+            {
+                startSampleIndex = resumeSampleIndex.Value;
+            }
+            else if (this.rawData != null && this.switching != null)
+            {
+                long currentBytes = 0;
+                try { currentBytes = this.player.GetPosition(); } catch { }
+                long currentSamples = currentBytes / sizeof(float);
+
+                long ls = Math.Max(0, this.loopStartSamples);
+                long le = Math.Max(ls + 1, this.loopEndSamples);
+                long loopLen = Math.Max(1, le - ls);
+
+                long elapsedSinceActivation = Math.Max(0, currentSamples - this.loopActivationSamples);
+                long offsetInLoop = elapsedSinceActivation % loopLen;
+                startSampleIndex = ls + offsetInLoop;
+            }
+            else
+            {
+                startSampleIndex = 0;
+            }
+
+            // If loop already disabled we only honor explicit resume requests
+            if (!this.loopEnabled)
+            {
+                if (resumeSampleIndex.HasValue)
+                {
+                    this.SeekSamples(Math.Max(0, startSampleIndex));
+                }
+                else
+                {
+                    RebuildLoopPipeline(adjustPosition: false);
+                }
+                return;
+            }
+
+            this.loopEnabled = false;
+
+            if (this.rawData != null && this.switching != null)
+            {
+                long maxLen = this.rawData.LongLength;
+                startSampleIndex = Math.Clamp(startSampleIndex, 0, maxLen);
+                ISampleProvider source = this.CreateArraySource(startSampleIndex);
+                var newPipeline = BuildPipeline(source, this.PlaybackRate, this.switching.WaveFormat);
+                lock (this.graphGate)
+                {
+                    this.pipeline = newPipeline;
+                    this.switching.SetCurrent(this.pipeline);
+                }
+            }
+
+            this.loopStartSamples = 0;
+            this.loopEndSamples = 0;
+            this.loopActivationSamples = 0;
+
+            if (resumeSampleIndex.HasValue && this.rawData == null)
+            {
+                this.SeekSamples(Math.Max(0, startSampleIndex));
+            }
+        }
+
         public async Task InitializePlayback(string filePath, int? deviceSampleRate = null, int desiredLatency = 50, float initialVolume = 1.0f)
         {
             this.ResetGraph();
@@ -128,10 +275,13 @@ namespace NAudience.Core
             this.pipeline = BuildPipeline(this.reader, this.PlaybackRate, deviceFormat);
             this.switching.SetCurrent(this.pipeline);
 
+            // Volume control wraps switching provider
+            this.volumeControl = new VolumeSampleProvider(this.switching) { Volume = Math.Clamp(initialVolume, 0f, 1f) };
+
             // WaveOut initialisieren (falls noch nicht)
             this.player.DesiredLatency = desiredLatency;
-            this.player.Volume = Math.Clamp(initialVolume, 0f, 1f);
-            this.waveProvider = new SampleToWaveProvider(this.switching);
+            this.player.Volume = 1.0f; // keep device stream at unity, control via VolumeSampleProvider
+            this.waveProvider = new SampleToWaveProvider(this.volumeControl);
             this.player.Init(this.waveProvider);
 
             // Start (nicht blocking)
@@ -149,19 +299,42 @@ namespace NAudience.Core
             this.Channels = channels;
             this.DeviceSampleRate = deviceSampleRate ?? sampleRate;
 
-            var source = new ArraySampleProvider(data, sampleRate, channels, startSampleIndex);
+            // Quelle (loop-aware)
+            ISampleProvider source = this.CreateArraySource(startSampleIndex);
             var deviceFormat = WaveFormat.CreateIeeeFloatWaveFormat(this.DeviceSampleRate, this.Channels);
 
             this.switching = new SwitchingSampleProvider(deviceFormat);
             this.pipeline = BuildPipeline(source, this.PlaybackRate, deviceFormat);
             this.switching.SetCurrent(this.pipeline);
 
+            // Volume control wraps switching provider
+            this.volumeControl = new VolumeSampleProvider(this.switching) { Volume = Math.Clamp(initialVolume, 0f, 1f) };
+
             this.player.DesiredLatency = desiredLatency;
-            this.player.Volume = Math.Clamp(initialVolume, 0f, 1f);
-            this.waveProvider = new SampleToWaveProvider(this.switching);
+            this.player.Volume = 1.0f; // keep device stream at unity, control via VolumeSampleProvider
+            this.waveProvider = new SampleToWaveProvider(this.volumeControl);
             this.player.Init(this.waveProvider);
 
             await Task.Run(() => this.player.Play());
+        }
+
+        private ISampleProvider CreateArraySource(long startSampleIndex)
+        {
+            if (this.rawData == null)
+            {
+                throw new InvalidOperationException("No raw data available for array source.");
+            }
+            if (this.loopEnabled)
+            {
+                long ls = Math.Clamp(this.loopStartSamples, 0, this.rawData.LongLength - 1);
+                long le = Math.Clamp(this.loopEndSamples, ls + 1, this.rawData.LongLength);
+                long start = Math.Clamp(startSampleIndex, ls, le - 1);
+                return (ISampleProvider) new LoopingArraySampleProvider(this.rawData, this.rawSampleRate, this.rawChannels, ls, le, start);
+            }
+            else
+            {
+                return new ArraySampleProvider(this.rawData, this.rawSampleRate, this.rawChannels, startSampleIndex);
+            }
         }
 
         // Nahtlose Anpassung der Geschwindigkeit (Pitch & Tempo ändern sich gemeinsam, "Varispeed")
@@ -174,8 +347,8 @@ namespace NAudience.Core
 
             this.PlaybackRate = factor;
 
-			// Neue Pipeline auf Basis derselben Quelle aufbauen und atomar umschalten
-			ISampleProvider? currentSource;
+            // Neue Pipeline auf Basis derselben Quelle aufbauen und atomar umschalten
+            ISampleProvider? currentSource;
             lock (this.graphGate)
             {
                 currentSource = this.pipeline; // aktuelle Pipeline-Quelle ist die erste Stufe der Kette
@@ -187,9 +360,6 @@ namespace NAudience.Core
 
             // currentSource ist bereits das Ergebnis vorheriger Resampler.
             // Baue die Pipeline neu basierend auf der ursprünglichen Quelle, wenn möglich.
-            // Sicherer: aus reader oder aus switching.WaveFormat nicht möglich, daher
-            // wir nutzen die gleiche Logik wie Initialize, aber mit dem Eingang der letzten Quelle,
-            // falls das die ursprüngliche Quelle ist. Besser: reader ?? pipeline als Quelle verwenden.
             ISampleProvider baseSource = this.reader ?? currentSource;
             var newPipeline = BuildPipeline(baseSource, this.PlaybackRate, this.switching.WaveFormat);
             lock (this.graphGate)
@@ -209,8 +379,16 @@ namespace NAudience.Core
                 return;
             }
             // Clamp startSampleIndex
-            startSampleIndex = Math.Clamp(startSampleIndex, 0, this.rawData.LongLength);
-            var source = new ArraySampleProvider(this.rawData, this.rawSampleRate, this.rawChannels, startSampleIndex);
+            if (this.loopEnabled)
+            {
+                startSampleIndex = Math.Clamp(startSampleIndex, this.loopStartSamples, Math.Max(this.loopStartSamples, this.loopEndSamples - 1));
+            }
+            else
+            {
+                startSampleIndex = Math.Clamp(startSampleIndex, 0, this.rawData.LongLength);
+            }
+
+            ISampleProvider source = this.CreateArraySource(startSampleIndex);
             var newPipeline = BuildPipeline(source, this.PlaybackRate, this.switching.WaveFormat);
             lock (this.graphGate)
             {
@@ -275,7 +453,15 @@ namespace NAudience.Core
 
         public void SetVolume(float volume)
         {
-            this.player.Volume = Math.Clamp(volume, 0f, 1f);
+            if (this.volumeControl != null)
+            {
+                this.volumeControl.Volume = Math.Clamp(volume, 0f, 1f);
+            }
+            else
+            {
+                // Fallback: set device stream volume if volume provider not yet created
+                this.player.Volume = Math.Clamp(volume, 0f, 1f);
+            }
         }
 
         private void ResetGraph()
@@ -284,11 +470,52 @@ namespace NAudience.Core
             this.reader?.Dispose();
             this.reader = null;
             this.switching = null;
+            this.volumeControl = null;
             this.waveProvider = null;
             this.pipeline = null;
             this.rawData = null;
             this.rawSampleRate = 0;
             this.rawChannels = 0;
+            // keep loop configuration; caller decides whether to clear
+        }
+
+        private void RebuildLoopPipeline(bool adjustPosition)
+        {
+            // Only rebuild if we are in array playback mode (rawData present) and pipeline initialized
+            if (this.rawData == null || this.switching == null || this.pipeline == null)
+            {
+                return;
+            }
+            // Current absolute sample index based on bytes
+            long currentBytes = 0;
+            try { currentBytes = this.player.GetPosition(); } catch { currentBytes = 0; }
+            int ch = Math.Max(1, this.rawChannels);
+            long currentSamples = currentBytes / sizeof(float); // bytes from WaveOutEvent.GetPosition are device bytes; we treat as floats for simplicity
+            // If loop enabled clamp; if outside and adjustPosition jump to loop start
+            long startSampleIndex = currentSamples;
+            if (this.loopEnabled)
+            {
+                long ls = Math.Clamp(this.loopStartSamples, 0, this.rawData.LongLength - 1);
+                long le = Math.Clamp(this.loopEndSamples, ls + 1, this.rawData.LongLength);
+                if (adjustPosition && (startSampleIndex < ls || startSampleIndex >= le))
+                {
+                    startSampleIndex = ls;
+                }
+                startSampleIndex = Math.Clamp(startSampleIndex, ls, le - 1);
+            }
+            else
+            {
+                startSampleIndex = Math.Clamp(startSampleIndex, 0, this.rawData.LongLength);
+            }
+
+            ISampleProvider newSource = this.CreateArraySource(startSampleIndex);
+            var deviceFormat = this.switching.WaveFormat;
+            var newPipeline = BuildPipeline(newSource, this.PlaybackRate, deviceFormat);
+            lock (this.graphGate)
+            {
+                this.pipeline = newPipeline;
+                this.switching.SetCurrent(this.pipeline);
+            }
         }
 
         public void Dispose()
@@ -297,6 +524,7 @@ namespace NAudience.Core
             this.reader?.Dispose();
             this.reader = null;
             this.switching = null;
+            this.volumeControl = null;
             this.waveProvider = null;
             this.pipeline = null;
             if (this.ownsPlayer)

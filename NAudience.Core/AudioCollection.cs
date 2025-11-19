@@ -235,7 +235,7 @@ namespace NAudience.Core
 
         private static void ApplyState(AudioObj target, AudioObj source)
         {
-            target.Data = (float[])source.Data.Clone();
+            target.Data = (float[]) source.Data.Clone();
             target.SampleRate = source.SampleRate;
             target.Channels = source.Channels;
             target.BitDepth = source.BitDepth;
@@ -275,7 +275,7 @@ namespace NAudience.Core
                 await a.StopAsync();
                 a.StartingOffset = 0;
                 a.ScrollOffset = 0;
-			});
+            });
             await Task.WhenAll(tasks);
         }
 
@@ -328,13 +328,13 @@ namespace NAudience.Core
             {
                 return null;
             }
-            float bpm = (float)await BeatScanner.ScanBpmAsync(audio, windowSize, lookingRange, this.BeatScanMinimumBpm, this.BeatScanMaximumBpm);
+            float bpm = (float) await BeatScanner.ScanBpmAsync(audio, windowSize, lookingRange, this.BeatScanMinimumBpm, this.BeatScanMaximumBpm);
             if (set)
-			{
-				audio.Bpm = bpm;
-			}
+            {
+                audio.Bpm = bpm;
+            }
 
-			return bpm;
+            return bpm;
         }
 
         // Helpers
